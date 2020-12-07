@@ -1,0 +1,556 @@
+---
+title: "678 midterm project"
+author: "Zhaosheng-Xie"
+date: "2020/11/12"
+output: pdf_document
+
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(readr)
+library(dplyr)
+library(magrittr)
+library(funModeling)
+library(rstanarm)
+library(lme4)
+library(ggplot2)
+library(scales)
+library(bayesplot)
+library(arm)
+library(funModeling)
+
+```
+# Introduction
+  With the development of science and society, mobile phone has become an indispensable part in our daily life. My project is about Chinese phone user. Data contains information about users' gender, users' age, location, mobile brand, and app type. They are in different datasets.
+  Questions:  
+  1.Which brand has the largest market share?  
+  2.What brands do people in different ages like?  
+  3.Which app is most popular?  
+  4.Distribution of Xiaomi users in China.  
+  5.The influence of age scale and gender on the choice of Xiaomi.
+  
+  
+  
+# Data reading
+```{r Original data,warnings=FALSE}
+app_events <- read.csv("DATA/app_events.csv")
+app_labels <- read.csv("DATA/app_labels.csv")
+events <- read.csv("DATA/events.csv")
+gender_age_train <- read.csv("DATA/gender_age_train.csv")
+label_categories <- read.csv("DATA/label_categories.csv")
+phone_brand <- read.csv("DATA/phone_brand.csv", stringsAsFactors = F) #This data contains Chinese
+```
+
+
+# Data cleaning
+```{r,warnings=FALSE,results='hide'}
+# checking for NA values
+length(which(!is.na(app_events)=="FALSE"))
+length(which(!is.na(app_labels)=="FALSE"))
+length(which(!is.na(events)=="FALSE"))
+length(which(!is.na(gender_age_train)=="FALSE"))
+length(which(!is.na(label_categories)=="FALSE"))
+length(which(!is.na(phone_brand)=="FALSE"))
+
+```
+So there is no NA in these data. 
+
+```{r process gender_age_train data,warnings=FALSE}
+# remove unneeded column
+gender_age_train %<>% dplyr::select(-"group")
+```
+
+```{r process events data,warnings=FALSE}
+# remove invalid data in events
+events_new1 <- events
+del0 <- which(events_new1$longitude==0 & events_new1$latitude==0) #remove(0,0)
+# length(del) is 968675
+events_new1 <- events_new1[-del0,]
+# unique(events_new1$longitude)
+del1 <- which(events_new1$longitude==1 & events_new1$latitude==1) #remove(1,1)
+events_new1 <- events_new1[-del1,]
+```
+
+
+```{r process phone_brand,warnings=FALSE}
+# change part of Chinese brand into English 
+Eng_phone_brand <- phone_brand
+Eng_phone_brand$phone_brand[which(Eng_phone_brand$phone_brand=="小米")] <- "Xiaomi"
+Eng_phone_brand$phone_brand[which(Eng_phone_brand$phone_brand=="三星")] <- "Samsung"
+Eng_phone_brand$phone_brand[which(Eng_phone_brand$phone_brand=="华为")] <- "HUAWEI"
+Eng_phone_brand$phone_brand[which(Eng_phone_brand$phone_brand=="魅族")] <- "Meizu"
+Eng_phone_brand$phone_brand[which(Eng_phone_brand$phone_brand=="酷派")] <- "Coolpad"
+Eng_phone_brand$phone_brand[which(Eng_phone_brand$phone_brand=="联想")] <- "Lenovo"
+Eng_phone_brand$phone_brand[which(Eng_phone_brand$phone_brand=="金立")] <- "GIONEE"
+```
+
+# EDA
+## Brand pie
+```{r,warnings=FALSE}
+# brand frequency 
+Pr.phone_brand <- freq(Eng_phone_brand$phone_brand)
+Top.Pr.phone_brand <- Pr.phone_brand[1:9,]
+freq.other_brand <- sum(Pr.phone_brand$frequency) - sum(Pr.phone_brand$frequency[1:9])
+Pr.other_brand <- freq.other_brand /  sum(Pr.phone_brand$frequency)
+mutate.1_row <- data.frame(var= "others", frequency= freq.other_brand, percentage= Pr.other_brand*100, cumulative_perc= 100.00)
+Top.Pr.phone_brand <- rbind(Top.Pr.phone_brand,mutate.1_row)
+colnames(Top.Pr.phone_brand)[1] <- 'brand'
+# View(Top.Pr.phone_brand)
+```
+```{r,warnings=FALSE}
+# add label
+label = as.vector(Top.Pr.phone_brand$brand)
+label = paste(label, "(", round(Top.Pr.phone_brand$frequency / sum(Top.Pr.phone_brand$frequency) * 100, 2), "%)  ", sep = "")
+# label = paste(label, "(", Top.Pr.phone_brand$percentage, "%)  ", sep = "")
+
+# pie
+ggplot(Top.Pr.phone_brand, aes(x = "", y = frequency, fill = brand)) + 
+  geom_bar(width = 1, stat = "identity") +
+  coord_polar("y", start = 0) + 
+  theme(axis.ticks = element_blank()) + 
+  labs(x = "", y = "", title = "Proportions of Different brands") +
+  scale_fill_discrete(breaks = Top.Pr.phone_brand$brand, labels = label)
+```
+
+From this result, we can see that Xiaomi is the most popular Chinese cell phone brand in 2016.
+
+```{r}
+# join phone_brand and gender_age_train
+User_phone <- left_join(gender_age_train,Eng_phone_brand, by="device_id")
+
+# mutate age scale
+User_phone <- mutate(User_phone, 
+              "age_scale"= ifelse(User_phone$age %in% 1:29, "young",
+                          ifelse(User_phone$age %in% 30:39,"young and middle", 
+                          ifelse(User_phone$age %in% 40:49, "middle","middle and old"))))
+```
+
+## Age_gender_brand bar(Details in appendix)
+```{r,warnings=FALSE,results='hide',eval=FALSE,echo=FALSE}
+# top 9 brands
+User_phone_top <- User_phone %>% filter(phone_brand %in% c("Xiaomi","Samsung","HUAWEI","vivo","OPPO","Meizu","Coolpad","Lenovo","GIONEE"))
+
+
+# divide users by age scale
+User_phone_Y <- User_phone %>% filter(User_phone$age %in% 1:29)#Young
+User_phone_Y_M <- User_phone %>% filter(User_phone$age %in% 30:39)#Young and middle age
+User_phone_M <- User_phone %>% filter(User_phone$age %in% 40:49)# Middle age
+User_phone_O <- User_phone %>% filter(User_phone$age %in% 50:100)# Middle and old
+
+# age distribution
+age_distribution <- ggplot(User_phone)+
+  geom_histogram(mapping = aes(x=age,fill= age_scale),breaks= 1:100)+ 
+  labs(title="Age distribution")
+
+# plot by 4 age scales
+library(funModeling)
+
+# young
+Y_brand_age_scale <- freq(User_phone_Y$phone_brand)
+Top5Y_brand_age_scale <- Y_brand_age_scale[1:5,]
+
+# young <- ggplot(Top5Y_brand_age_scale, aes(x = var, y = frequency, fill = var)) + 
+#   geom_bar(width = 1, stat = "identity") +
+#   labs(
+#     title="Top5 cell phone brands of young people",
+#     x=""
+#   )
+
+Y_data <- User_phone_Y %>% group_by(phone_brand) %>% count(gender,phone_brand, sort = T)
+Y_data <- Y_data %>%  filter(phone_brand %in% c("Xiaomi","Samsung","HUAWEI","vivo","OPPO"))
+
+ggplot(Y_data, aes(x= phone_brand,  group=gender,y=n)) + 
+    geom_bar(aes( fill = factor(..x..)), stat="identity") +
+    labs(title="Top5 cell phone brands of young people in different gender" ,y = "number", fill="phone_brand") +
+    facet_grid(~gender)
+
+# young and middle
+Y_M_brand_age_scale <- freq(User_phone_Y_M$phone_brand)
+Top5Y_M_brand_age_scale <- Y_M_brand_age_scale[1:5,]
+# young_middle <- ggplot(Top5Y_M_brand_age_scale, aes(x = var, y = frequency, fill = var)) + 
+#   geom_bar(width = 1, stat = "identity") +
+#   labs(
+#     title="Top5 cell phone brands of young and middle age",
+#     x=""
+#   )
+
+Y_M_data <- User_phone_Y_M %>% group_by(phone_brand) %>% count(gender,phone_brand, sort = T)
+Y_M_data <- Y_M_data %>%  filter(phone_brand %in% c("Xiaomi","Samsung","HUAWEI","vivo","OPPO"))
+
+ggplot(Y_M_data, aes(x= phone_brand,  group=gender,y=n)) + 
+    geom_bar(aes( fill = factor(..x..)), stat="identity") +
+    labs(title="Top5 cell phone brands of young and middle people in different gender" ,y = "number", fill="phone_brand") +
+    facet_grid(~gender)
+
+# middle
+M_brand_age_scale <- freq(User_phone_M$phone_brand)
+Top5M_brand_age_scale <- M_brand_age_scale[1:5,]
+# middle <- ggplot(Top5M_brand_age_scale, aes(x = var, y = frequency, fill = var)) + 
+#   geom_bar(width = 1, stat = "identity") +
+#   labs(
+#     title="Top5 cell phone brands of middle age",
+#     x=""
+#   )
+M_data <- User_phone_M %>% group_by(phone_brand) %>% count(gender,phone_brand, sort = T)
+M_data <- M_data %>%  filter(phone_brand %in% c("Xiaomi","Samsung","HUAWEI","Coolpad","OPPO"))
+
+ggplot(M_data, aes(x= phone_brand,  group=gender,y=n)) + 
+    geom_bar(aes( fill = factor(..x..)), stat="identity") +
+    labs(title="Top5 cell phone brands of middle people in different gender" ,y = "number", fill="phone_brand") +
+    facet_grid(~gender)
+
+# middle and old
+M_O_brand_age_scale <- freq(User_phone_O$phone_brand)
+Top5M_O_brand_age_scale <- M_O_brand_age_scale[1:5,]
+# middle_old <- ggplot(Top5M_O_brand_age_scale, aes(x = var, y = frequency, fill = var)) + 
+#   geom_bar(width = 1, stat = "identity") +
+#   labs(
+#     title="Top5 cell phone brands of middle and old age",
+#     x=""
+#   )
+M_O_data <- User_phone_O %>% group_by(phone_brand) %>% count(gender,phone_brand, sort = T)
+M_O_data <- M_O_data %>%  filter(phone_brand %in% c("Xiaomi","Samsung","HUAWEI","Coolpad","OPPO"))
+
+ggplot(M_O_data, aes(x= phone_brand,  group=gender,y=n)) + 
+    geom_bar(aes( fill = factor(..x..)), stat="identity") +
+    labs(title="Top5 cell phone brands of middle and old people in different gender" ,y = "number", fill="phone_brand") +
+    facet_grid(~gender)
+
+
+```
+
+  According to age scale in China, I divide age into 4 parts: 1-29 years old is young; 30-39 is young and middle; 40-49 is middle; over 50 is middle and old.  
+  In young age scale, top 5 brands are Xiaomi, Samsung, HUAWEI, VIVO and OPPO. Xiaomi is famous for its high cost performance. Samsung and HUAWEI are traditional companies. VIVO and OPPO are famous for music and photo performance, which are preferred by young people.  
+  In young and middle age scale, top 5 brands are Xiaomi, Samsung, HUAWEI, OPPO and VIVO. The rank is similar to young age scale except position of OPPO and VIVO.  
+  In middle age scale, top 5 brands are HUAWEI Samsung, Xiaomi, OPPO and Coolpad. HUAWEI and Samsung are expensive but these people do have money. They prefer to buy well-known brands.  
+  In middle and old age scale, top 5 brands are Xiaomi, Samsung, HUAWEI, Coolpad and OPPO.   
+  In all age scale, more male choose Xiaomi than female.
+  
+## Xiaomi
+```{r,warnings=FALSE}
+# data
+Xiaomi <- User_phone
+Xiaomi <- mutate(Xiaomi, choose=ifelse(Xiaomi$phone_brand=="Xiaomi",1,0))
+
+# Xiaomi plot
+ggplot(data = Xiaomi,aes(x=choose, fill=gender))+  
+  geom_histogram()+
+  scale_x_continuous( breaks=seq(0,1,1))+
+  facet_wrap(~ age_scale, nrow = 2)+
+  labs(title = "The influence of age scale and gender on the choice of Xiaomi",
+       x= "Whether to choose Xiaomi")
+
+# proportion of Xiaomi in different age
+select_Xiaomi <- Xiaomi %>% group_by(age) %>% count(age, wt = choose, name = "select_number")
+all_Xiaomi <- Xiaomi %>% group_by(age) %>% count(name = "headcount")
+pro_Xiaomi <- left_join(select_Xiaomi,all_Xiaomi,by ="age")
+pro_Xiaomi <- mutate(pro_Xiaomi, proportion=select_number/headcount)
+pro_Xiaomi <- as.data.frame(pro_Xiaomi)
+pro_Xiaomi <- mutate(pro_Xiaomi, 
+              "age_scale"= ifelse(pro_Xiaomi$age %in% 1:29, "young",
+                          ifelse(pro_Xiaomi$age %in% 30:39,"young and middle", 
+                          ifelse(pro_Xiaomi$age %in% 40:49, "middle","middle and old"))))
+
+ggplot(data = pro_Xiaomi, aes(x=age, y= proportion))+
+  geom_point(mapping=aes(col=age_scale))+
+  geom_line(mapping=aes(col=age_scale))+
+  geom_smooth()+
+  scale_y_continuous(labels = scales::percent)+
+  labs(title = "The proportion of people in different ages who choose Xiaomi")
+
+
+```
+
+  If we just pay attention to Xiaomi, we can see proportion of choosing Xiaomi approximately decreases with the growth of age. In young age scale, Xiaomi accounts for 24.24%; in young and middle age scale, Xiaomi accounts for 22.56%; in middle age scale, Xiaomi accounts for 20.26%; in middle and old age scale, Xiaomi accounts for 22.37%.  
+  From the smooth line in second plot, we can see the proportion increases in young age scale, slightly decreases in the second age scale, holds steady in the third age scale and decreases in the forth age scale. But data from people who are very young or very old are way less than other age scale. The proportion will be extreme.
+  
+
+
+
+# Modeling 
+
+Please pick a regression model that best fits your data and fit your model.  Please make sure you describe why you decide to choose the model. Also, if you are using GLM, make sure you explain your choice of link function as well.
+
+
+
+
+```{r}
+# M5 <- stan_glmer(choose~gender+(1|age_scale),data =Xiaomi,family = binomial(link = "logit"))
+# save(M5,file = "M5.RData")
+
+```
+
+```{r}
+# M6 <- stan_glm(choose~gender+age,data =Xiaomi,family = binomial(link = "logit"))
+# save(M6,file = "M6.RData")
+
+```
+  I use multilevel logistic regression model in M5 and logistic regression model in M6.
+
+
+# Validation 
+
+Please perform a necessary validation and argue why your choice of the model is appropriate.  
+
+```{r ,warnings=FALSE}
+# M5
+load("M5.RData")
+## binned residual plot 
+binnedplot(fitted(M5), resid(M5))
+## residual plot 
+plot(c(0,0.5), c(-1,1), xlab="Probability of choosing Xiaomi", ylab="Observed - estimated", 
+     type="n", main="Residual plot", mgp=c(2,.5,0)) 
+abline(0,0, col="gray", lwd=.5) 
+points(fitted(M5), Xiaomi$choose-fitted(M5), pch=20, cex=.2)
+
+# M6
+load("M6.RData")
+## binned residual plot 
+binnedplot(fitted(M6), resid(M6))
+## residual plot 
+plot(c(0,0.5), c(-1,1), xlab="Probability of choosing Xiaomi", ylab="Observed - estimated", 
+     type="n", main="Residual plot", mgp=c(2,.5,0)) 
+abline(0,0, col="gray", lwd=.5) 
+points(fitted(M6), Xiaomi$choose-fitted(M6), pch=20, cex=.2)
+
+```
+
+There 2 models' residual plot look similar. But binned residual plots are different.  
+First, they have different ordinate order of magnitude.
+Second, in M5'binned residual plot, the points are at the edge of the confidence interval. In M6'binned residual plot, most points are in the confidence interval.
+
+
+
+# Inference 
+
+Based on the result so far please perform statistical inference to compare the comparison of interest.
+
+```{r ,warnings=FALSE}
+# M5
+M5
+summary(M5)
+M5$coefficients
+
+# M6
+summary(M6)
+M6$coefficients
+```
+Interpretation of M5:  
+  Intercept -1.299 means on average, female in young age scale have invlogit(-1.299+0.099)=23.15% probability of choosing Xiaomi. Sd is way less than mean, which means the sample size is enough to estimate.  
+  Gender coefficient is 0.090 which means a difference of gender corresponds to no more than an 0.090/4=2.24% positive difference in the probability of choosing Xiaomi. Generally speaking, comparing to female, male are more likely to choose Xiaomi.  
+  We have 4 groups and we can see  σ(age_scale) is estimated at 0.18. Dividing by 4 tells us that the age scales differed by approximately ±4.5% on the probability scale.
+  b[(Intercept) age_scale:young] is 0.099 which gives a positive effect on choosing Xiaomi.
+  b[(Intercept) age_scale:young_and_middle] and b[(Intercept) age_scale:middle_and_old] also have positive effect. But effect degree is very light.
+  b[(Intercept) age_scale:middle] is -0.117 which has a negative effect on choosing Xiaomi.
+  These 4 groups' result match the age-proportion plot.
+  
+Interpretation of M6:  
+  Intercept -1.081 means on average, female in 0-year-old have invlogit(-1.081)=25.33% probability of choosing Xiaomi.
+  Gender coefficient is 0.087 which means a difference of gender corresponds to no more than an 0.087/4=2.18% positive difference in the probability of choosing Xiaomi. Generally speaking, comparing to female, male are more likely to choose Xiaomi.
+  Age coefficient is -0.006 which means a difference of 1 in age category corresponds to no more than an 0.15% negative difference in the probability of choosing Xiaomi. 
+  
+### Discussion 
+
+Please clearly state your conclusion and the implication of the result.
+At start, I have some questions. Now, I will answer each of them.  
+
+1.Which brand has the largest market share?  
+No.1: Xiaomi. No.2: Samsung. No.3: HUAWEI.  
+
+2.What brands do people in different ages like?   
+In young age scale(1-29), top 5 brands are Xiaomi, Samsung, HUAWEI, VIVO and OPPO; in young and middle age scale(30-39), top 5 brands are Xiaomi, Samsung, HUAWEI, OPPO and VIVO; in middle age scale(40-49), top 5 brands are HUAWEI Samsung, Xiaomi, OPPO and Coolpad; in middle and old age scale(>=50), top 5 brands are Xiaomi, Samsung, HUAWEI, Coolpad and OPPO.  
+
+3.Which app is most popular?   
+The most download and the most active app is a parkour game developed by Tencent.  
+
+4.Distribution of Xiaomi users in China.  
+Xiaomi users are mainly concentrated in eastern and southeastern China.  
+
+5.The influence of age scale and gender on the choice of Xiaomi.  
+Generally speaking, male are more likely to choose Xiaomi than female. With the growth of age, probability of choosing Xiaomi will slightly decrease. If we devide age into 4 groups, young age scale(1-29), young and middle age scale(30-39), middle and old age scale(>=50) have positive effect on choosing Xiaomi. But the effect degree is light. Middle age scale(40-49) has negative effect on choosing Xiaomi.
+
+
+# Reference
+[1] GH book  
+*Data Analysis Using Regression and Multilever*  
+[2] Count() and tally()  
+https://dplyr.tidyverse.org/reference/count.html#arguments  
+[3] How to plot a percentage plot with ggplot2  
+https://sebastiansauer.github.io/percentage_plot_ggplot2_V2/
+
+# Appendix
+
+## Age_gender_brand bar
+```{r,warnings=FALSE}
+# top 9 brands
+User_phone_top <- User_phone %>% filter(phone_brand %in% c("Xiaomi","Samsung","HUAWEI","vivo","OPPO","Meizu","Coolpad","Lenovo","GIONEE"))
+
+
+# divide users by age scale
+User_phone_Y <- User_phone %>% filter(User_phone$age %in% 1:29)#Young
+User_phone_Y_M <- User_phone %>% filter(User_phone$age %in% 30:39)#Young and middle age
+User_phone_M <- User_phone %>% filter(User_phone$age %in% 40:49)# Middle age
+User_phone_O <- User_phone %>% filter(User_phone$age %in% 50:100)# Middle and old
+
+# age distribution
+age_distribution <- ggplot(User_phone)+
+  geom_histogram(mapping = aes(x=age,fill= age_scale),breaks= 1:100)+ 
+  labs(title="Age distribution")
+
+# plot by 4 age scales
+library(funModeling)
+
+# young
+Y_brand_age_scale <- freq(User_phone_Y$phone_brand)
+Top5Y_brand_age_scale <- Y_brand_age_scale[1:5,]
+
+# young <- ggplot(Top5Y_brand_age_scale, aes(x = var, y = frequency, fill = var)) + 
+#   geom_bar(width = 1, stat = "identity") +
+#   labs(
+#     title="Top5 cell phone brands of young people",
+#     x=""
+#   )
+
+Y_data <- User_phone_Y %>% group_by(phone_brand) %>% count(gender,phone_brand, sort = T)
+Y_data <- Y_data %>%  filter(phone_brand %in% c("Xiaomi","Samsung","HUAWEI","vivo","OPPO"))
+
+ggplot(Y_data, aes(x= phone_brand,  group=gender,y=n)) + 
+    geom_bar(aes( fill = factor(..x..)), stat="identity") +
+    labs(title="Top5 cell phone brands of young people in different gender" ,y = "number", fill="phone_brand") +
+    facet_grid(~gender)
+
+# young and middle
+Y_M_brand_age_scale <- freq(User_phone_Y_M$phone_brand)
+Top5Y_M_brand_age_scale <- Y_M_brand_age_scale[1:5,]
+# young_middle <- ggplot(Top5Y_M_brand_age_scale, aes(x = var, y = frequency, fill = var)) + 
+#   geom_bar(width = 1, stat = "identity") +
+#   labs(
+#     title="Top5 cell phone brands of young and middle age",
+#     x=""
+#   )
+
+Y_M_data <- User_phone_Y_M %>% group_by(phone_brand) %>% count(gender,phone_brand, sort = T)
+Y_M_data <- Y_M_data %>%  filter(phone_brand %in% c("Xiaomi","Samsung","HUAWEI","vivo","OPPO"))
+
+ggplot(Y_M_data, aes(x= phone_brand,  group=gender,y=n)) + 
+    geom_bar(aes( fill = factor(..x..)), stat="identity") +
+    labs(title="Top5 cell phone brands of young and middle people in different gender" ,y = "number", fill="phone_brand") +
+    facet_grid(~gender)
+
+# middle
+M_brand_age_scale <- freq(User_phone_M$phone_brand)
+Top5M_brand_age_scale <- M_brand_age_scale[1:5,]
+# middle <- ggplot(Top5M_brand_age_scale, aes(x = var, y = frequency, fill = var)) + 
+#   geom_bar(width = 1, stat = "identity") +
+#   labs(
+#     title="Top5 cell phone brands of middle age",
+#     x=""
+#   )
+M_data <- User_phone_M %>% group_by(phone_brand) %>% count(gender,phone_brand, sort = T)
+M_data <- M_data %>%  filter(phone_brand %in% c("Xiaomi","Samsung","HUAWEI","Coolpad","OPPO"))
+
+ggplot(M_data, aes(x= phone_brand,  group=gender,y=n)) + 
+    geom_bar(aes( fill = factor(..x..)), stat="identity") +
+    labs(title="Top5 cell phone brands of middle people in different gender" ,y = "number", fill="phone_brand") +
+    facet_grid(~gender)
+
+# middle and old
+M_O_brand_age_scale <- freq(User_phone_O$phone_brand)
+Top5M_O_brand_age_scale <- M_O_brand_age_scale[1:5,]
+# middle_old <- ggplot(Top5M_O_brand_age_scale, aes(x = var, y = frequency, fill = var)) + 
+#   geom_bar(width = 1, stat = "identity") +
+#   labs(
+#     title="Top5 cell phone brands of middle and old age",
+#     x=""
+#   )
+M_O_data <- User_phone_O %>% group_by(phone_brand) %>% count(gender,phone_brand, sort = T)
+M_O_data <- M_O_data %>%  filter(phone_brand %in% c("Xiaomi","Samsung","HUAWEI","Coolpad","OPPO"))
+
+ggplot(M_O_data, aes(x= phone_brand,  group=gender,y=n)) + 
+    geom_bar(aes( fill = factor(..x..)), stat="identity") +
+    labs(title="Top5 cell phone brands of middle and old people in different gender" ,y = "number", fill="phone_brand") +
+    facet_grid(~gender)
+
+
+```
+
+  According to age scale in China, I divide age into 4 parts: 1-29 years old is young; 30-39 is young and middle; 40-49 is middle; over 50 is middle and old.  
+  In young age scale, top 5 brands are Xiaomi, Samsung, HUAWEI, VIVO and OPPO. Xiaomi is famous for its high cost performance. Samsung and HUAWEI are traditional companies. VIVO and OPPO are famous for music and photo performance, which are preferred by young people.  
+  In young and middle age scale, top 5 brands are Xiaomi, Samsung, HUAWEI, OPPO and VIVO. The rank is similar to young age scale except position of OPPO and VIVO.  
+  In middle age scale, top 5 brands are HUAWEI Samsung, Xiaomi, OPPO and Coolpad. HUAWEI and Samsung are expensive but these people do have money. They prefer to buy well-known brands.  
+  In middle and old age scale, top 5 brands are Xiaomi, Samsung, HUAWEI, Coolpad and OPPO.   
+  In all age scale, more male choose Xiaomi than female.
+## Favorite app
+```{r,warnings=FALSE}
+# join app_labels and label_categories
+app_labels_categories <- left_join(app_labels,label_categories, by="label_id")
+## check na
+length(which(!is.na(app_labels_categories)=="FALSE"))
+
+# Top 10 apps that have been installed the most times
+Top.10.favorite.app <- freq(app_events$app_id)[1:10,]
+colnames(Top.10.favorite.app)[1] <- 'app_id'
+## join Top.10.favorite.app and app_labels_categories
+Top.10.favorite.app$app_id <- as.numeric(Top.10.favorite.app$app_id)
+Top.10.favorite.app <- left_join(Top.10.favorite.app,app_labels_categories, by="app_id")  
+
+# Top 10 apps that are still active
+active <- app_events %>% filter(is_active==1) 
+Top.10.active.app <- freq(active$app_id)[1:10,]
+colnames(Top.10.active.app)[1] <- 'app_id'
+## join Top.10.active.app and app_labels_categories
+Top.10.active.app$app_id <- as.numeric(Top.10.active.app$app_id)
+Top.10.active.app <- left_join(Top.10.active.app,app_labels_categories, by="app_id")  
+Top.10.active.app
+```
+  Since I don't have apps' name data, I use label to describe app. From the result, the most download and the most active app is a parkour game developed by Tencent.  
+  
+## Map
+```{r prepare map data,warnings=FALSE}
+library(tmap)
+library(tmaptools)
+library(sf)
+library(RColorBrewer)
+# extract data for mapping
+map_data <- dplyr::select(events_new1,c("device_id","longitude","latitude"))
+map_data <- right_join(map_data,User_phone,by="device_id")
+map_data <- dplyr::select(map_data,1:6)
+map_data <- map_data %>% filter(phone_brand %in% 
+  c("Xiaomi","Samsung","HUAWEI","vivo","OPPO","Meizu","Coolpad","Lenovo","GIONEE"))
+## check na
+length(which(!is.na(map_data)=="FALSE"))
+## remove na
+map_data <- na.omit(map_data)
+## tmap data
+tmap_mode('view')
+epsg_wgs84 <- 4326 # GPS CRS (WGS 84)
+tmap_data <- 
+  map_data %>% 
+  st_as_sf(coords = c("longitude", "latitude")) %>%
+  st_set_crs(epsg_wgs84)
+tmap_data_Xiaomi <- tmap_data %>% filter(phone_brand=="Xiaomi")
+```
+
+```{r map,warnings=FALSE}
+# Xiaomi
+Xiaomi_distribution <- tm_shape(tmap_data_Xiaomi) +
+  tm_dots(col = 'red', size = .01, alpha=.5) +
+  tm_layout(main.title='Xiaomi Distribution',
+            main.title.position="center",
+            frame = FALSE)
+Xiaomi_distribution
+
+# main brands
+sam_row <- sample(1:nrow(tmap_data), 5000,replace = F)
+brand_map <-
+  tm_shape(tmap_data[sam_row,]) +
+  tm_dots(col = 'phone_brand', size = .02, alpha=.5) +
+  tm_layout(main.title='Main Brands Distribution',
+            main.title.position="center",
+            frame = FALSE)
+
+```
+
+  From the map we can see Xiaomi buyers are mainly concentrated in eastern and southeastern China. Partly because these regions are more developed than other regions.
