@@ -1,0 +1,48 @@
+---
+title: "CI plot"
+author: "Zhaosheng-Xie"
+date: "2020/12/7"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(ggplot2)
+library(rstanarm)
+
+```
+
+```{r}
+# load models
+load("M5.RData")
+load("M6.RData")
+
+# CI plot
+## M5
+ci5 <- posterior_interval(M5,prob = 0.95)
+coef5 <- M5$coefficients
+plot(range(ci5),c(1,6), type = "n",xlab = "Coefficient value", ylab = "The coefficient of ordinal")
+title(main = "Confidence Interval plot of M5")
+for (i in 1:6) {
+  lines(ci5[i,],c(i,i))
+  points(x=coef5[i],y=i, pch=19)
+}
+## M6
+ci6 <- posterior_interval(M6,prob = 0.95)
+coef6 <- M6$coefficients
+plot(range(ci6),c(1,3), type = "n",xlab = "Coefficient value", ylab = "The coefficient of ordinal")
+title(main = "Confidence Interval plot of M6")
+for (i in 1:3) {
+  lines(ci6[i,],c(i,i))
+  points(x=coef6[i],y=i, pch=19)
+}
+
+
+
+```
+
+
+
+
+
